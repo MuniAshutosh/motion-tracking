@@ -1,10 +1,9 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Motion Tracker</title>
+    <title>Motion Tracking</title>
     <style>
         body {
             font-family: -apple-system, system-ui, sans-serif;
@@ -38,11 +37,7 @@
             object-fit: cover;
         }
 
-        #motionCanvas {
-            z-index: 10;
-            mix-blend-mode: screen;
-            pointer-events: none;
-        }
+        #motionCanvas { z-index: 10; mix-blend-mode: screen; pointer-events: none; }
 
         #focus-ring {
             position: absolute;
@@ -83,38 +78,26 @@
         input[type=range] { width: 100%; accent-color: #00ff88; margin: 5px 0; }
 
         button {
-            padding: 12px;
+            padding: 14px;
             border: none;
             border-radius: 8px;
             cursor: pointer;
             font-weight: bold;
-            font-size: 0.8rem;
+            font-size: 0.85rem;
             background: #3d3d3d;
             color: white;
+            -webkit-appearance: none;
         }
 
+        button:active { background: #555; }
         button.active { background: #00ff88; color: black; }
         .btn-power { background: #ff453a; }
         .btn-power.on { background: #32d74b; color: black; }
-        
-        #fps-counter {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            background: rgba(0,0,0,0.5);
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-family: monospace;
-            font-size: 10px;
-            z-index: 20;
-        }
     </style>
 </head>
-
 <body>
 
     <div class="container" id="video-wrapper" onclick="handleTapToFocus(event)">
-        <div id="fps-counter">FPS: <span id="fps-val">0</span></div>
         <video id="video" autoplay playsinline muted></video>
         <canvas id="motionCanvas"></canvas>
         <div id="focus-ring"></div>
@@ -138,40 +121,73 @@
         </div>
     </div>
 
+    <script id="workerCode" type="javascript/worker">
+        let prevPixels = null;
+
+        self.onmessage = function(e) {
+            const { curr, thresh, intens, width, height } = e.data;
+            const motionIndices = [];
+
+            if (prevPixels) {
+                for (let i = 0; i < curr.length; i += 4) {
+                    const diff = (Math.abs(curr[i] - prevPixels[i]) + 
+                                  Math.abs(curr[i+1] - prevPixels[i+1]) + 
+                                  Math.abs(curr[i+2] - prevPixels[i+2])) / 3;
+                    if (diff > thresh) {
+                        motionIndices.push(i);
+                    }
+                }
+            }
+            prevPixels = curr;
+            // Send back only the indices that moved to keep communication fast
+            self.postMessage({ motionIndices, intens });
+        };
+    </script>
+
     <script>
         const video = document.getElementById('video');
         const canvas = document.getElementById('motionCanvas');
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const ctx = canvas.getContext('2d', { alpha: true });
         const powerBtn = document.getElementById('powerBtn');
         const torchBtn = document.getElementById('torchBtn');
         const focusBtn = document.getElementById('focusBtn');
         const focusRing = document.getElementById('focus-ring');
-        const fpsVal = document.getElementById('fps-val');
 
-        let prevPixels = null;
         let stream = null;
         let track = null;
         let isRunning = false;
-        let isProcessing = false; // Flag to prevent overlap
-        let lastFrameTime = 0;
+        let workerBusy = false;
 
-        // Persistent offscreen buffer to avoid re-creating canvas every frame (Huge Speed Up)
-        const bufferCanvas = document.createElement('canvas');
-        const bCtx = bufferCanvas.getContext('2d', { willReadFrequently: true });
+        // Setup Worker
+        const blob = new Blob([document.getElementById('workerCode').textContent], { type: 'text/javascript' });
+        const worker = new Worker(URL.createObjectURL(blob));
+
+        worker.onmessage = (e) => {
+            const { motionIndices, intens } = e.data;
+            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imgData.data;
+
+            for (let i = 0; i < motionIndices.length; i++) {
+                const idx = motionIndices[i];
+                data[idx] = 255;
+                data[idx + 1] = Math.min(255, data[idx + 1] + 25);
+                data[idx + 2] = 0;
+                data[idx + 3] = intens;
+            }
+            ctx.putImageData(imgData, 0, 0);
+            workerBusy = false;
+        };
 
         async function startCamera() {
             try {
                 stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment", width: { ideal: 1280 } },
-                    audio: false
+                    video: { facingMode: "environment", width: { ideal: 1280 } }
                 });
                 video.srcObject = stream;
                 track = stream.getVideoTracks()[0];
                 await video.play();
-                
-                canvas.width = bufferCanvas.width = video.videoWidth;
-                canvas.height = bufferCanvas.height = video.videoHeight;
-
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
                 isRunning = true;
                 powerBtn.innerText = "Camera: ON";
                 powerBtn.classList.add('on');
@@ -189,60 +205,34 @@
 
         function togglePower() { isRunning ? stopCamera() : startCamera(); }
 
-        // --- Optimized Processing Logic ---
-        function tick(now) {
+        function tick() {
             if (!isRunning) return;
 
-            // Performance Monitoring
-            fpsVal.innerText = Math.round(1000 / (now - lastFrameTime));
-            lastFrameTime = now;
+            if (!workerBusy && video.readyState === video.HAVE_ENOUGH_DATA) {
+                workerBusy = true;
+                const tempCanvas = new OffscreenCanvas(canvas.width, canvas.height);
+                const tCtx = tempCanvas.getContext('2d');
+                tCtx.drawImage(video, 0, 0);
+                const currData = tCtx.getImageData(0, 0, canvas.width, canvas.height).data;
 
-            // Only process if the previous frame's math is finished
-            if (!isProcessing && video.readyState === video.HAVE_ENOUGH_DATA) {
-                isProcessing = true;
-                
-                // Draw current frame to offscreen buffer
-                bCtx.drawImage(video, 0, 0);
-                const currentData = bCtx.getImageData(0, 0, canvas.width, canvas.height);
-                const curr = currentData.data;
-
-                if (prevPixels) {
-                    const heatmapData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                    const hPixels = heatmapData.data;
-                    const thresh = document.getElementById('threshold').value;
-                    const intens = document.getElementById('intensity').value;
-
-                    // Optimized Loop
-                    for (let i = 0; i < curr.length; i += 4) {
-                        const diff = (Math.abs(curr[i] - prevPixels[i]) + 
-                                      Math.abs(curr[i+1] - prevPixels[i+1]) + 
-                                      Math.abs(curr[i+2] - prevPixels[i+2])) / 3;
-
-                        if (diff > thresh) {
-                            hPixels[i] = 255; 
-                            hPixels[i+1] = Math.min(255, hPixels[i+1] + 25); 
-                            hPixels[i+3] = intens;
-                        }
-                    }
-                    ctx.putImageData(heatmapData, 0, 0);
-                }
-                
-                // Store copy for next comparison
-                prevPixels = new Uint8ClampedArray(curr);
-                isProcessing = false;
+                worker.postMessage({
+                    curr: currData,
+                    thresh: document.getElementById('threshold').value,
+                    intens: document.getElementById('intensity').value,
+                    width: canvas.width,
+                    height: canvas.height
+                }, [currData.buffer]); // Zero-copy transfer
             }
-            
             requestAnimationFrame(tick);
         }
 
-        // --- Camera Intelligence ---
+        // Camera Logic
         async function toggleTorch() {
             if (!track) return;
-            const caps = track.getCapabilities();
-            if (!caps.torch) return alert("No Torch");
             const cur = track.getConstraints().advanced?.[0]?.torch || false;
             await track.applyConstraints({ advanced: [{ torch: !cur }] });
             torchBtn.classList.toggle('active', !cur);
+            torchBtn.innerText = !cur ? "Torch: ON" : "Torch: OFF";
         }
 
         async function toggleFocusMode() {
@@ -258,16 +248,14 @@
             const rect = e.currentTarget.getBoundingClientRect();
             const x = (e.clientX - rect.left) / rect.width;
             const y = (e.clientY - rect.top) / rect.height;
-            
             focusRing.style.left = `${e.clientX - rect.left}px`;
             focusRing.style.top = `${e.clientY - rect.top}px`;
             focusRing.style.opacity = '1';
             focusRing.style.transform = 'translate(-50%, -50%) scale(1)';
-
             await track.applyConstraints({ advanced: [{ focusMode: "manual", pointsOfInterest: [{x, y}] }] });
             focusBtn.innerText = "Focus: Locked";
             focusBtn.classList.add('active');
-            setTimeout(() => { focusRing.style.opacity = '0'; focusRing.style.transform = 'translate(-50%, -50%) scale(2)'; }, 800);
+            setTimeout(() => focusRing.style.opacity = '0', 1000);
         }
 
         function clearHeatmap() { ctx.clearRect(0, 0, canvas.width, canvas.height); }
