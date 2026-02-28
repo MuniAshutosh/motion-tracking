@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ant Movement Tracker</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #1a1a1a;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+        }
+
+        canvas,
+        video {
+            width: 100%;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+        }
+
+        #motionCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 10;
+            mix-blend-mode: screen;
+            /* Makes black pixels transparent */
+        }
+
+        #video {
+            display: block;
+        }
+
+        .controls {
+            margin-top: 20px;
+            background: #333;
+            padding: 15px;
+            border-radius: 8px;
+            display: grid;
+            gap: 10px;
+        }
+
+        label {
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h2>Ant Movement Tracker</h2>
+    <p>Keep phone still. Moving pixels will leave a heat trail.</p>
+
+    <div class="container">
+        <video id="video" autoplay playsinline></video>
+        <canvas id="motionCanvas"></canvas>
+    </div>
+
+    <div class="controls">
+        <label>Sensitivity (Threshold): <input type="range" id="threshold" min="10" max="100" value="30"></label>
+        <label>Heat Intensity: <input type="range" id="intensity" min="1" max="255" value="150"></label>
+        <button onclick="clearHeatmap()">Clear Heatmap</button>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('motionCanvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+        let prevImageData = null;
+        const thresholdInput = document.getElementById('threshold');
+        const intensityInput = document.getElementById('intensity');
+
+        // 1. Initialize Camera
+        async function setupCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "environment" },
+                    audio: false
+                });
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    processFrame();
+                };
+            } catch (err) {
+                console.error("Camera access denied:", err);
+                alert("Please allow camera access to use this tool.");
+            }
+        }
+
+        // 2. Clear Heatmap function
+        function clearHeatmap() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        // 3. Process Video Frames
+        function processFrame() {
+            // Create a temporary canvas to get raw pixel data from video
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = canvas.width;
+            tempCanvas.height = canvas.height;
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            const currentImageData = tempCtx.getImageData(0, 0, canvas.width, canvas.height);
+            const pixels = currentImageData.data;
+
+            if (prevImageData) {
+                // Get the current persistent heatmap data
+                const heatmapImgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const heatmapPixels = heatmapImgData.data;
+
+                for (let i = 0; i < pixels.length; i += 4) {
+                    // Calculate brightness difference (Grayscale approximation)
+                    const rDiff = Math.abs(pixels[i] - prevImageData.data[i]);
+                    const gDiff = Math.abs(pixels[i + 1] - prevImageData.data[i + 1]);
+                    const bDiff = Math.abs(pixels[i + 2] - prevImageData.data[i + 2]);
+                    const avgDiff = (rDiff + gDiff + bDiff) / 3;
+
+                    if (avgDiff > thresholdInput.value) {
+                        // If movement detected, color the pixel on the heatmap
+                        // We use Red for movement and decrease transparency/increase blue for 'heat'
+                        heatmapPixels[i] = 255;     // Red
+                        heatmapPixels[i + 1] = heatmapPixels[i + 1] + 20; // Turn Yellow/White over time
+                        heatmapPixels[i + 2] = 0;     // Blue
+                        heatmapPixels[i + 3] = intensityInput.value; // Alpha (Opacity)
+                    }
+                }
+                ctx.putImageData(heatmapImgData, 0, 0);
+            }
+
+            prevImageData = currentImageData;
+            requestAnimationFrame(processFrame);
+        }
+
+        setupCamera();
+    </script>
+</body>
+
+</html>
