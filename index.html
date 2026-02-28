@@ -3,11 +3,11 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Ant Movement Tracker</title>
     <style>
         body {
-            font-family: sans-serif;
+            font-family: -apple-system, system-ui, sans-serif;
             background: #1a1a1a;
             color: white;
             display: flex;
@@ -21,133 +21,226 @@
             position: relative;
             width: 100%;
             max-width: 640px;
+            aspect-ratio: 4 / 3;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
         }
 
         canvas,
         video {
-            width: 100%;
-            border-radius: 8px;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
-        }
-
-        #motionCanvas {
             position: absolute;
             top: 0;
             left: 0;
-            z-index: 10;
-            mix-blend-mode: screen;
-            /* Makes black pixels transparent */
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
         }
 
-        #video {
-            display: block;
+        #motionCanvas {
+            z-index: 10;
+            mix-blend-mode: screen;
+            pointer-events: none;
         }
 
         .controls {
             margin-top: 20px;
             background: #333;
             padding: 15px;
-            border-radius: 8px;
+            border-radius: 12px;
             display: grid;
-            gap: 10px;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            width: 100%;
+            max-width: 640px;
+            box-sizing: border-box;
+        }
+
+        .full-width {
+            grid-column: span 2;
         }
 
         label {
-            font-size: 0.9rem;
+            font-size: 0.8rem;
+            color: #aaa;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
         }
+
+        input[type=range] {
+            width: 100%;
+            accent-color: #007AFF;
+        }
+
+        button {
+            padding: 15px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 0.9rem;
+            transition: opacity 0.2s;
+        }
+
+        button:active {
+            opacity: 0.7;
+        }
+
+        .btn-clear {
+            background: #444;
+            color: white;
+        }
+
+        .btn-power {
+            background: #ff453a;
+            color: white;
+        }
+
+        /* Red for OFF */
+        .btn-power.on {
+            background: #32d74b;
+            color: #000;
+        }
+
+        /* Green for ON */
     </style>
 </head>
 
 <body>
 
-    <h2>Ant Movement Tracker</h2>
-    <p>Keep phone still. Moving pixels will leave a heat trail.</p>
+    <h2 style="margin-bottom: 5px;">Ant Tracker</h2>
+    <p style="font-size: 0.9rem; color: #888; margin-top: 0;">Status: <span id="status-text">Ready</span></p>
 
     <div class="container">
-        <video id="video" autoplay playsinline></video>
+        <video id="video" autoplay playsinline muted></video>
         <canvas id="motionCanvas"></canvas>
     </div>
 
     <div class="controls">
-        <label>Sensitivity (Threshold): <input type="range" id="threshold" min="10" max="100" value="30"></label>
-        <label>Heat Intensity: <input type="range" id="intensity" min="1" max="255" value="150"></label>
-        <button onclick="clearHeatmap()">Clear Heatmap</button>
+        <label class="full-width">Sensitivity: <input type="range" id="threshold" min="5" max="100" value="30"></label>
+        <label class="full-width">Heat Intensity: <input type="range" id="intensity" min="1" max="255"
+                value="150"></label>
+
+        <button class="btn-clear" onclick="clearHeatmap()">Clear Heat</button>
+        <button id="powerBtn" class="btn-power" onclick="togglePower()">Camera: OFF</button>
     </div>
 
     <script>
         const video = document.getElementById('video');
         const canvas = document.getElementById('motionCanvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const powerBtn = document.getElementById('powerBtn');
+        const statusText = document.getElementById('status-text');
 
         let prevImageData = null;
+        let stream = null;
+        let isRunning = false;
+
         const thresholdInput = document.getElementById('threshold');
         const intensityInput = document.getElementById('intensity');
 
-        // 1. Initialize Camera
-        async function setupCamera() {
+        async function startCamera() {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({
+                statusText.innerText = "Requesting Camera...";
+                stream = await navigator.mediaDevices.getUserMedia({
                     video: { facingMode: "environment" },
                     audio: false
                 });
                 video.srcObject = stream;
+
+                // Crucial for mobile: ensure video plays
+                await video.play();
+
                 video.onloadedmetadata = () => {
                     canvas.width = video.videoWidth;
                     canvas.height = video.videoHeight;
-                    processFrame();
                 };
+
+                isRunning = true;
+                powerBtn.innerText = "Camera: ON";
+                powerBtn.classList.add('on');
+                statusText.innerText = "Live";
+                processFrame();
             } catch (err) {
-                console.error("Camera access denied:", err);
-                alert("Please allow camera access to use this tool.");
+                console.error(err);
+                statusText.innerText = "Error Accessing Camera";
+                alert("Camera access denied or unavailable.");
             }
         }
 
-        // 2. Clear Heatmap function
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+            isRunning = false;
+            prevImageData = null;
+            powerBtn.innerText = "Camera: OFF";
+            powerBtn.classList.remove('on');
+            statusText.innerText = "Stopped (Power Save)";
+        }
+
+        function togglePower() {
+            if (isRunning) {
+                stopCamera();
+            } else {
+                startCamera();
+            }
+        }
+
         function clearHeatmap() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
         }
 
-        // 3. Process Video Frames
         function processFrame() {
-            // Create a temporary canvas to get raw pixel data from video
+            if (!isRunning) return;
+
+            // Use a temporary context to avoid creating extra canvas elements every frame
             const tempCanvas = document.createElement('canvas');
             tempCanvas.width = canvas.width;
             tempCanvas.height = canvas.height;
             const tempCtx = tempCanvas.getContext('2d');
-            tempCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-            const currentImageData = tempCtx.getImageData(0, 0, canvas.width, canvas.height);
-            const pixels = currentImageData.data;
+            try {
+                tempCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const currentImageData = tempCtx.getImageData(0, 0, canvas.width, canvas.height);
+                const pixels = currentImageData.data;
 
-            if (prevImageData) {
-                // Get the current persistent heatmap data
-                const heatmapImgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                const heatmapPixels = heatmapImgData.data;
+                if (prevImageData) {
+                    const heatmapImgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const heatmapPixels = heatmapImgData.data;
 
-                for (let i = 0; i < pixels.length; i += 4) {
-                    // Calculate brightness difference (Grayscale approximation)
-                    const rDiff = Math.abs(pixels[i] - prevImageData.data[i]);
-                    const gDiff = Math.abs(pixels[i + 1] - prevImageData.data[i + 1]);
-                    const bDiff = Math.abs(pixels[i + 2] - prevImageData.data[i + 2]);
-                    const avgDiff = (rDiff + gDiff + bDiff) / 3;
+                    for (let i = 0; i < pixels.length; i += 4) {
+                        const rDiff = Math.abs(pixels[i] - prevImageData.data[i]);
+                        const gDiff = Math.abs(pixels[i + 1] - prevImageData.data[i + 1]);
+                        const bDiff = Math.abs(pixels[i + 2] - prevImageData.data[i + 2]);
+                        const avgDiff = (rDiff + gDiff + bDiff) / 3;
 
-                    if (avgDiff > thresholdInput.value) {
-                        // If movement detected, color the pixel on the heatmap
-                        // We use Red for movement and decrease transparency/increase blue for 'heat'
-                        heatmapPixels[i] = 255;     // Red
-                        heatmapPixels[i + 1] = heatmapPixels[i + 1] + 20; // Turn Yellow/White over time
-                        heatmapPixels[i + 2] = 0;     // Blue
-                        heatmapPixels[i + 3] = intensityInput.value; // Alpha (Opacity)
+                        if (avgDiff > thresholdInput.value) {
+                            heatmapPixels[i] = 255;
+                            heatmapPixels[i + 1] = Math.min(255, heatmapPixels[i + 1] + 20);
+                            heatmapPixels[i + 2] = 0;
+                            heatmapPixels[i + 3] = intensityInput.value;
+                        }
                     }
+                    ctx.putImageData(heatmapImgData, 0, 0);
                 }
-                ctx.putImageData(heatmapImgData, 0, 0);
+                prevImageData = currentImageData;
+            } catch (e) {
+                // If the video stops suddenly, catch the error to stop the loop
+                console.warn("Processing paused: ", e.message);
+                return;
             }
 
-            prevImageData = currentImageData;
             requestAnimationFrame(processFrame);
         }
 
-        setupCamera();
+        // Initialize on load
+        startCamera();
     </script>
 </body>
 
