@@ -4,17 +4,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Ant Tracker Pro - Intelligence Edition</title>
+    <title>Motion Tracker</title>
     <style>
         body {
             font-family: -apple-system, system-ui, sans-serif;
-            background: #1a1a1a;
+            background: #121212;
             color: white;
             display: flex;
             flex-direction: column;
             align-items: center;
             margin: 0;
-            padding: 20px;
+            padding: 15px;
             touch-action: manipulation;
         }
 
@@ -27,11 +27,9 @@
             border-radius: 12px;
             overflow: hidden;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
-            border: 1px solid #333;
         }
 
-        canvas,
-        video {
+        canvas, video {
             position: absolute;
             top: 0;
             left: 0;
@@ -46,98 +44,77 @@
             pointer-events: none;
         }
 
-        /* Focus Ring Animation */
         #focus-ring {
             position: absolute;
-            width: 70px;
-            height: 70px;
+            width: 60px;
+            height: 60px;
             border: 2px solid #00ff88;
             border-radius: 50%;
             transform: translate(-50%, -50%) scale(2);
             opacity: 0;
             transition: transform 0.3s, opacity 0.3s;
-            pointer-events: none;
             z-index: 15;
+            pointer-events: none;
         }
 
         .controls {
-            margin-top: 20px;
-            background: #2a2a2a;
+            margin-top: 15px;
+            background: #252525;
             padding: 15px;
             border-radius: 16px;
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 12px;
+            gap: 10px;
             width: 100%;
             max-width: 640px;
             box-sizing: border-box;
         }
 
-        .full-width {
-            grid-column: span 2;
-        }
+        .full-width { grid-column: span 2; }
 
         label {
             font-size: 0.7rem;
             color: #888;
             text-transform: uppercase;
-            letter-spacing: 1px;
             display: flex;
             justify-content: space-between;
         }
 
-        input[type=range] {
-            width: 100%;
-            accent-color: #00ff88;
-            margin-top: 5px;
-        }
+        input[type=range] { width: 100%; accent-color: #00ff88; margin: 5px 0; }
 
         button {
-            padding: 14px;
+            padding: 12px;
             border: none;
-            border-radius: 10px;
+            border-radius: 8px;
             cursor: pointer;
             font-weight: bold;
             font-size: 0.8rem;
             background: #3d3d3d;
             color: white;
-            transition: all 0.2s;
         }
 
-        button.active {
-            background: #00ff88;
-            color: black;
-        }
-
-        .btn-power {
-            background: #ff453a;
-        }
-
-        .btn-power.on {
-            background: #32d74b;
-            color: black;
-        }
-
-        #status-bar {
-            width: 100%;
-            max-width: 640px;
-            font-size: 0.75rem;
-            color: #666;
-            margin-bottom: 8px;
-            display: flex;
-            justify-content: space-between;
+        button.active { background: #00ff88; color: black; }
+        .btn-power { background: #ff453a; }
+        .btn-power.on { background: #32d74b; color: black; }
+        
+        #fps-counter {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.5);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 10px;
+            z-index: 20;
         }
     </style>
 </head>
 
 <body>
 
-    <div id="status-bar">
-        <span>ANT TRACKER V2.1</span>
-        <span id="status">INITIALIZING...</span>
-    </div>
-
     <div class="container" id="video-wrapper" onclick="handleTapToFocus(event)">
+        <div id="fps-counter">FPS: <span id="fps-val">0</span></div>
         <video id="video" autoplay playsinline muted></video>
         <canvas id="motionCanvas"></canvas>
         <div id="focus-ring"></div>
@@ -148,13 +125,13 @@
             <label>Sensitivity <span id="v-thresh">30</span></label>
             <input type="range" id="threshold" min="5" max="100" value="30">
         </div>
-
+        
         <button id="torchBtn" onclick="toggleTorch()">Torch: OFF</button>
         <button id="focusBtn" onclick="toggleFocusMode()">Focus: Auto</button>
-
+        
         <button onclick="clearHeatmap()">Clear Heat</button>
         <button id="powerBtn" class="btn-power" onclick="togglePower()">Camera: OFF</button>
-
+        
         <div class="full-width">
             <label>Heat Intensity <span id="v-intens">150</span></label>
             <input type="range" id="intensity" min="50" max="255" value="150">
@@ -169,13 +146,18 @@
         const torchBtn = document.getElementById('torchBtn');
         const focusBtn = document.getElementById('focusBtn');
         const focusRing = document.getElementById('focus-ring');
+        const fpsVal = document.getElementById('fps-val');
 
-        let prevImageData = null;
+        let prevPixels = null;
         let stream = null;
         let track = null;
         let isRunning = false;
-        let isFlashOn = false;
-        let isFocusLocked = false;
+        let isProcessing = false; // Flag to prevent overlap
+        let lastFrameTime = 0;
+
+        // Persistent offscreen buffer to avoid re-creating canvas every frame (Huge Speed Up)
+        const bufferCanvas = document.createElement('canvas');
+        const bCtx = bufferCanvas.getContext('2d', { willReadFrequently: true });
 
         async function startCamera() {
             try {
@@ -185,134 +167,114 @@
                 });
                 video.srcObject = stream;
                 track = stream.getVideoTracks()[0];
-
                 await video.play();
-
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
+                
+                canvas.width = bufferCanvas.width = video.videoWidth;
+                canvas.height = bufferCanvas.height = video.videoHeight;
 
                 isRunning = true;
-                updateUIState(true);
-                processFrame();
-            } catch (err) {
-                document.getElementById('status').innerText = "CAMERA ERROR";
-            }
+                powerBtn.innerText = "Camera: ON";
+                powerBtn.classList.add('on');
+                requestAnimationFrame(tick);
+            } catch (err) { alert("Camera Error"); }
         }
 
         function stopCamera() {
-            if (stream) {
-                stream.getTracks().forEach(t => t.stop());
-                video.srcObject = null;
-            }
+            if (stream) stream.getTracks().forEach(t => t.stop());
+            video.srcObject = null;
             isRunning = false;
-            updateUIState(false);
-        }
-
-        function updateUIState(on) {
-            powerBtn.innerText = on ? "Camera: ON" : "Camera: OFF";
-            powerBtn.className = on ? "btn-power on" : "btn-power";
-            document.getElementById('status').innerText = on ? "LIVE" : "POWER SAVE";
+            powerBtn.innerText = "Camera: OFF";
+            powerBtn.classList.remove('on');
         }
 
         function togglePower() { isRunning ? stopCamera() : startCamera(); }
 
-        // --- INTELLIGENT CAMERA CONTROLS ---
+        // --- Optimized Processing Logic ---
+        function tick(now) {
+            if (!isRunning) return;
 
+            // Performance Monitoring
+            fpsVal.innerText = Math.round(1000 / (now - lastFrameTime));
+            lastFrameTime = now;
+
+            // Only process if the previous frame's math is finished
+            if (!isProcessing && video.readyState === video.HAVE_ENOUGH_DATA) {
+                isProcessing = true;
+                
+                // Draw current frame to offscreen buffer
+                bCtx.drawImage(video, 0, 0);
+                const currentData = bCtx.getImageData(0, 0, canvas.width, canvas.height);
+                const curr = currentData.data;
+
+                if (prevPixels) {
+                    const heatmapData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const hPixels = heatmapData.data;
+                    const thresh = document.getElementById('threshold').value;
+                    const intens = document.getElementById('intensity').value;
+
+                    // Optimized Loop
+                    for (let i = 0; i < curr.length; i += 4) {
+                        const diff = (Math.abs(curr[i] - prevPixels[i]) + 
+                                      Math.abs(curr[i+1] - prevPixels[i+1]) + 
+                                      Math.abs(curr[i+2] - prevPixels[i+2])) / 3;
+
+                        if (diff > thresh) {
+                            hPixels[i] = 255; 
+                            hPixels[i+1] = Math.min(255, hPixels[i+1] + 25); 
+                            hPixels[i+3] = intens;
+                        }
+                    }
+                    ctx.putImageData(heatmapData, 0, 0);
+                }
+                
+                // Store copy for next comparison
+                prevPixels = new Uint8ClampedArray(curr);
+                isProcessing = false;
+            }
+            
+            requestAnimationFrame(tick);
+        }
+
+        // --- Camera Intelligence ---
         async function toggleTorch() {
             if (!track) return;
             const caps = track.getCapabilities();
-            if (!caps.torch) return alert("Torch not supported.");
-            isFlashOn = !isFlashOn;
-            await track.applyConstraints({ advanced: [{ torch: isFlashOn }] });
-            torchBtn.innerText = isFlashOn ? "Torch: ON" : "Torch: OFF";
-            torchBtn.classList.toggle('active', isFlashOn);
+            if (!caps.torch) return alert("No Torch");
+            const cur = track.getConstraints().advanced?.[0]?.torch || false;
+            await track.applyConstraints({ advanced: [{ torch: !cur }] });
+            torchBtn.classList.toggle('active', !cur);
         }
 
         async function toggleFocusMode() {
             if (!track) return;
-            isFocusLocked = !isFocusLocked;
-            const mode = isFocusLocked ? "manual" : "continuous";
-            await track.applyConstraints({ advanced: [{ focusMode: mode }] });
-            focusBtn.innerText = isFocusLocked ? "Focus: Locked" : "Focus: Auto";
-            focusBtn.classList.toggle('active', isFocusLocked);
+            const cur = track.getConstraints().advanced?.[0]?.focusMode === 'manual';
+            await track.applyConstraints({ advanced: [{ focusMode: cur ? 'continuous' : 'manual' }] });
+            focusBtn.innerText = cur ? "Focus: Auto" : "Focus: Locked";
+            focusBtn.classList.toggle('active', !cur);
         }
 
         async function handleTapToFocus(e) {
-            if (!track || !isRunning) return;
-
-            // Show Focus Ring Animation
+            if (!track) return;
             const rect = e.currentTarget.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-
-            focusRing.style.left = `${x}px`;
-            focusRing.style.top = `${y}px`;
+            const x = (e.clientX - rect.left) / rect.width;
+            const y = (e.clientY - rect.top) / rect.height;
+            
+            focusRing.style.left = `${e.clientX - rect.left}px`;
+            focusRing.style.top = `${e.clientY - rect.top}px`;
             focusRing.style.opacity = '1';
             focusRing.style.transform = 'translate(-50%, -50%) scale(1)';
 
-            try {
-                // Point focus requires focusMode to be 'manual' or 'single-shot'
-                await track.applyConstraints({
-                    advanced: [{
-                        focusMode: "manual",
-                        pointsOfInterest: [{ x: x / rect.width, y: y / rect.height }]
-                    }]
-                });
-                isFocusLocked = true;
-                focusBtn.innerText = "Focus: Locked";
-                focusBtn.classList.add('active');
-            } catch (err) {
-                console.warn("Point focus not supported on this browser/device.");
-            }
-
-            setTimeout(() => { focusRing.style.opacity = '0'; focusRing.style.transform = 'translate(-50%, -50%) scale(2)'; }, 1000);
+            await track.applyConstraints({ advanced: [{ focusMode: "manual", pointsOfInterest: [{x, y}] }] });
+            focusBtn.innerText = "Focus: Locked";
+            focusBtn.classList.add('active');
+            setTimeout(() => { focusRing.style.opacity = '0'; focusRing.style.transform = 'translate(-50%, -50%) scale(2)'; }, 800);
         }
-
-        // --- MOTION LOGIC ---
 
         function clearHeatmap() { ctx.clearRect(0, 0, canvas.width, canvas.height); }
-
-        function processFrame() {
-            if (!isRunning) return;
-
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = canvas.width;
-            tempCanvas.height = canvas.height;
-            const tempCtx = tempCanvas.getContext('2d');
-            tempCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-            const currentImageData = tempCtx.getImageData(0, 0, canvas.width, canvas.height);
-            const pixels = currentImageData.data;
-
-            if (prevImageData) {
-                const heatmapImgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                const heatmapPixels = heatmapImgData.data;
-                const thresh = document.getElementById('threshold').value;
-                const intens = document.getElementById('intensity').value;
-
-                for (let i = 0; i < pixels.length; i += 4) {
-                    const diff = (Math.abs(pixels[i] - prevImageData.data[i]) +
-                        Math.abs(pixels[i + 1] - prevImageData.data[i + 1]) +
-                        Math.abs(pixels[i + 2] - prevImageData.data[i + 2])) / 3;
-
-                    if (diff > thresh) {
-                        heatmapPixels[i] = 255;
-                        heatmapPixels[i + 1] = Math.min(255, heatmapPixels[i + 1] + 25);
-                        heatmapPixels[i + 3] = intens;
-                    }
-                }
-                ctx.putImageData(heatmapImgData, 0, 0);
-            }
-            prevImageData = currentImageData;
-            requestAnimationFrame(processFrame);
-        }
-
-        // Update value displays
         document.getElementById('threshold').oninput = (e) => document.getElementById('v-thresh').innerText = e.target.value;
         document.getElementById('intensity').oninput = (e) => document.getElementById('v-intens').innerText = e.target.value;
 
         startCamera();
     </script>
 </body>
-
 </html>
